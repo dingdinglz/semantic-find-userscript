@@ -10,7 +10,7 @@ import type { SearchRun } from '../../src/shared/types';
 import { FindError } from '../../src/shared/errors';
 beforeEach(() => { document.body.innerHTML = ''; mockGM(credential); });
 afterEach(() => vi.useRealTimers());
-const payload = (body?: string) => response(Object.keys(JSON.parse(body!).state.targets));
+const payload = (body?: string) => response(JSON.parse(body!).state.candidates);
 describe('search lifecycle, retry and cache', () => {
   it('does not evaluate without authorization and caches all valid judgments for the same snapshot/query', async () => {
     const send = vi.fn(async (_path, _key, _signal, _timeout, body) => ({ status: 200, responseText: JSON.stringify(payload(body)), responseHeaders: '' }));
@@ -62,16 +62,40 @@ describe('search lifecycle, retry and cache', () => {
       const assertion = expect(pending).rejects.toBeInstanceOf(FindError); await vi.runAllTimersAsync(); await assertion; expect(send).toHaveBeenCalledTimes(status === 503 ? 3 : 1);
     }
   });
-  it('subdivides only explicit server length errors, including single long targets', async () => {
-    const snap = snapshot(1); snap.passages[0].text = 'Original complete evidence. '.repeat(10);
+  it('subdivides explicit server length errors without dropping the shared context', async () => {
+    const snap = snapshot(2);
     const send = vi.fn(async (_p, _k, _s, _t, body) => {
-      const parsed = JSON.parse(body!), targets = Object.values(parsed.state.targets) as { text: string }[];
-      if (targets[0].text.length > 180) return { status: 422, responseText: 'context_length_exceeded', responseHeaders: '' };
+      const parsed = JSON.parse(body!);
+      expect(Object.keys(parsed.state.document)).toEqual(['b00001', 'b00002']);
+      if (parsed.state.candidates.length > 1) return { status: 422, responseText: 'context_length_exceeded', responseHeaders: '' };
       return { status: 200, responseText: JSON.stringify(payload(body)), responseHeaders: '' };
     });
     const c = new SearchController(new TypeSafeClient(send), () => {});
     await c.start(snap, 'q', credential.id, () => true);
-    expect(c.run?.completed).toBe(1); expect(c.run?.judgments.get('b00001')?.value).toBe(0.9); expect(send).toHaveBeenCalledTimes(3);
+    expect(c.run?.completed).toBe(2); expect(send).toHaveBeenCalledTimes(3);
+  });
+  it('reports incomplete if the server rejects even one question with its context', async () => {
+    const send = vi.fn(async () => ({ status: 422, responseText: 'context_length_exceeded', responseHeaders: '' }));
+    const c = new SearchController(new TypeSafeClient(send), () => {});
+    await c.start(snapshot(1), 'q', credential.id, () => true);
+    expect(c.run?.completed).toBe(0); expect(c.run?.status).toBe('partial');
+    expect(resultStatus(c.run!)).not.toContain('没有找到'); expect(send).toHaveBeenCalledOnce();
+  });
+  it('retains already-judged passages as context when continuing a partial run', async () => {
+    let fail = true;
+    const snap = snapshot(20);
+    const send = vi.fn(async (_p, _k, _s, _t, body) => {
+      const parsed = JSON.parse(body!);
+      expect(Object.keys(parsed.state.document)).toHaveLength(20);
+      if (fail && parsed.state.candidates.includes('b00020')) return { status: 422, responseText: 'invalid', responseHeaders: '' };
+      return { status: 200, responseText: JSON.stringify(payload(body)), responseHeaders: '' };
+    });
+    const c = new SearchController(new TypeSafeClient(send), () => {});
+    await c.start(snap, 'q', credential.id, () => true);
+    expect(c.run?.completed).toBe(16);
+    fail = false; await c.start(snap, 'q', credential.id, () => true);
+    expect(c.run?.completed).toBe(20);
+    expect(JSON.parse(send.mock.calls.at(-1)![4]!).state.candidates).toHaveLength(4);
   });
   it('cache separates credentials/context/model contract and evicts query groups', () => {
     const cache = new SearchCache(), snap = snapshot(1);

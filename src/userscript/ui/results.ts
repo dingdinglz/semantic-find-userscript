@@ -1,5 +1,9 @@
 import type { LocalPassage, PageSnapshot, SearchRun } from '../../shared/types';
 import { button, element, safeEnd } from '../../shared/utils';
+export function passageLabel(p: LocalPassage): string {
+  const region = { content: '正文', navigation: '导航栏', sidebar: '侧边栏', header: '页眉', footer: '页脚', page: '页面' }[p.region];
+  return [region, ...p.headingPath].join(' / ');
+}
 export function classify(value: number): 'match' | 'uncertain' | 'no' { return value >= 0.8 ? 'match' : value > 0.2 ? 'uncertain' : 'no'; }
 export function resultStatus(run: SearchRun): string {
   if (run.status === 'stale') return '页面内容已变化，旧结果已停止定位，请重新搜索。';
@@ -23,7 +27,7 @@ export class ResultsView {
   private snapshot?: PageSnapshot; private run?: SearchRun; private activeId?: string;
   constructor(private select: (p: LocalPassage) => void) { this.uncertain.append(this.summary, this.unsureList); this.node.append(this.matches, this.uncertain, this.more); }
   update(snapshot: PageSnapshot, run: SearchRun, activeId?: string): void {
-    if (this.run?.runId !== run.runId) this.limit = 40;
+    if (this.run?.runId !== run.runId) { this.limit = 40; this.uncertain.open = true; }
     this.snapshot = snapshot; this.run = run; this.activeId = activeId; this.render();
   }
   clear(): void { this.snapshot = undefined; this.run = undefined; this.matches.replaceChildren(); this.unsureList.replaceChildren(); this.uncertain.hidden = this.more.hidden = true; }
@@ -37,18 +41,23 @@ export class ResultsView {
       const j = this.run.judgments.get(p.id); if (!j) continue;
       if (classify(j.value) === 'match') matched.push(p); else if (classify(j.value) === 'uncertain') unsure.push(p);
     }
+    unsure.sort((a, b) => this.run!.judgments.get(b.id)!.value - this.run!.judgments.get(a.id)!.value || a.order - b.order);
     const render = (p: LocalPassage, i: number, uncertain: boolean) => {
       const li = element('li', undefined, `result${uncertain ? ' uncertain' : ''}`);
       li.dataset.passageId = p.id;
       const jump = button('', () => this.select(p)); jump.dataset.passageId = p.id; jump.setAttribute('aria-current', String(this.activeId === p.id));
-      jump.append(element('span', `${uncertain ? '待确认' : '匹配'} ${i + 1} · ${p.headingPath.join(' / ') || '正文'}`, 'heading'), element('span', p.text.length > 260 ? p.text.slice(0, safeEnd(p.text, 260)) + '…' : p.text, 'quote'));
+      const probability = element('span', `匹配概率 ${Number((this.run!.judgments.get(p.id)!.value * 100).toFixed(1))}%`, 'probability');
+      probability.title = '模型认为该片段符合查询的概率（Noul），不是保证正确率。';
+      const meta = element('span', undefined, 'result-meta');
+      meta.append(element('span', `${uncertain ? '待确认' : '匹配'} ${i + 1} · ${passageLabel(p)}`, 'heading'), probability);
+      jump.append(meta, element('span', p.text.length > 260 ? p.text.slice(0, safeEnd(p.text, 260)) + '…' : p.text, 'quote'));
       li.append(jump);
       if (p.text.length > 260) { const details = element('details'); details.open = expanded.has(p.id); details.append(element('summary', '完整原文'), element('div', p.text, 'full')); li.append(details); }
       return li;
     };
     this.matches.replaceChildren(...matched.slice(0, this.limit).map((p, i) => render(p, i, false)));
     this.unsureList.replaceChildren(...unsure.slice(0, this.limit).map((p, i) => render(p, i, true)));
-    this.summary.textContent = `待确认片段（${unsure.length}）`; this.uncertain.hidden = !unsure.length;
+    this.summary.textContent = `待确认片段（${unsure.length}，按匹配概率降序）`; this.uncertain.hidden = !unsure.length;
     this.more.hidden = matched.length <= this.limit && unsure.length <= this.limit;
     if (focused) [...this.node.querySelectorAll<HTMLButtonElement>('button[data-passage-id]')].find(b => b.dataset.passageId === focused)?.focus({ preventScroll: true });
   }

@@ -17,7 +17,7 @@ export function mockGM(record?: CredentialRecord) {
 export const credential: CredentialRecord = { schemaVersion: 1, id: 'test-record-v1', apiKey: 'test-placeholder-not-a-real-key' };
 export function passage(index: number, text = 'Original passage.'): LocalPassage {
   const container = document.createElement('p'); container.textContent = text; document.body.append(container); const node = container.firstChild as Text;
-  return { id: `b${String(index).padStart(5, '0')}`, text, normalizedText: text, textHash: text, headingPath: [], before: '', after: '', order: index - 1, container,
+  return { id: `b${String(index).padStart(5, '0')}`, text, normalizedText: text, textHash: text, headingPath: [], before: '', after: '', kind: 'content', region: 'content', order: index - 1, container,
     slices: [{ node, nodeStart: 0, nodeEnd: text.length, rawStart: 0, rawEnd: text.length }] };
 }
 export function snapshot(count = 3): PageSnapshot { return { id: 'snapshot-1', digest: 'digest', pageEpoch: 0, revision: 1, root: document.body, scope: 'article', limitations: [], passages: Array.from({ length: count }, (_, i) => passage(i + 1)) }; }

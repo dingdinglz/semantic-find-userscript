@@ -1,7 +1,8 @@
+import type { Scope } from '../../shared/types';
 import { button, element } from '../../shared/utils';
 import { safeMessage } from '../../shared/errors';
 import { Credentials, credentialLabel, readCredential, cleanKey } from '../settings/credentials';
-import { preferences, savePreferences, exportPreferences, importPreferences } from '../settings/preferences';
+import { preferences, savePreferences, exportPreferences, importPreferences, SCOPE_LABELS } from '../settings/preferences';
 import { MODEL } from '../typesafe/prompts';
 import { TypeSafeClient } from '../typesafe/client';
 export class SettingsPanel {
@@ -31,7 +32,7 @@ export class SettingsPanel {
     this.node.append(label, row, this.state, actions, this.message,
       element('p', '测试只检查 API 连接，不读取或发送网页正文。测试草稿不会自动保存。', 'muted'),
       element('p', `服务：https://api.typesafe.ai\n模型：${MODEL}\n安全请求要求 Tampermonkey 5.4+。`, 'muted'),
-      element('p', 'Key 保存在 Tampermonkey 脚本存储（非加密保险箱）。正文直接发送给 TypeSafe，费用由你的账户承担。密码框和 Shadow DOM 不能阻止恶意网页观察输入；请只在信任的 HTTPS 页面通过油猴菜单配置 Key。', 'notice warning'), consoleLink);
+      element('p', 'Key 保存在 Tampermonkey 脚本存储（非加密保险箱）。点击查找或按 Enter 会直接将查询和检索范围内的文本发送给 TypeSafe，不再弹出确认；费用由你的账户承担。密码框和 Shadow DOM 不能阻止恶意网页观察输入；请只在信任的 HTTPS 页面通过油猴菜单配置 Key。', 'notice warning'), consoleLink);
     if (!secure) this.node.prepend(element('p', 'HTTP 页面禁止输入密钥。请在你信任的 HTTPS 页面打开脚本设置。', 'notice warning'));
     this.buildPreferences();
     this.node.append(button('返回搜索（不自动提交）', back));
@@ -69,7 +70,11 @@ export class SettingsPanel {
     finally { if (version === this.version) { this.testing = undefined; this.refresh(); } draft = undefined; }
   }
   private buildPreferences(): void {
-    const prefs = preferences(), details = element('details'); details.append(element('summary', '快捷键、站点与普通设置'));
+    const prefs = preferences(), details = element('details'); details.open = true; details.append(element('summary', '检索范围、快捷键与站点设置'));
+    const scope = element('select'); scope.id = 'sf-scope';
+    const scopeLabel = element('label', '默认检索范围（保存后持续生效）'); scopeLabel.htmlFor = scope.id;
+    for (const [value, text] of Object.entries(SCOPE_LABELS)) { const option = element('option', text); option.value = value; scope.append(option); }
+    scope.value = prefs.scope;
     const shortcut = element('input'); shortcut.value = prefs.shortcut; shortcut.id = 'sf-shortcut';
     const label = element('label', '快捷键（如 Mod+Shift+F，Mod 随系统使用 Ctrl / Cmd）'); label.htmlFor = shortcut.id;
     const takeover = element('input'); takeover.type = 'checkbox'; takeover.checked = prefs.takeoverFind;
@@ -77,12 +82,12 @@ export class SettingsPanel {
     const margin = element('input'); margin.type = 'number'; margin.min = '0'; margin.max = '400'; margin.value = String(prefs.scrollMargin); margin.id = 'sf-margin';
     const marginLabel = element('label', '固定顶栏预留间距（px）'); marginLabel.htmlFor = margin.id;
     const site = element('select'); site.setAttribute('aria-label', '当前站点发送策略');
-    for (const [value, text] of [['ask', '当前站点：每次询问'], ['allow', '当前站点：记住主动检索授权'], ['disabled', '当前站点：永久禁用检索']]) { const option = element('option', text); option.value = value; site.append(option); }
-    site.value = prefs.sites[location.origin] ?? 'ask';
+    for (const [value, text] of [['allow', '当前站点：主动搜索时直接发送'], ['disabled', '当前站点：永久禁用检索']]) { const option = element('option', text); option.value = value; site.append(option); }
+    site.value = prefs.sites[location.origin] ?? 'allow';
     const save = () => {
       try {
         const latest = preferences();
-        savePreferences({ ...latest, shortcut: shortcut.value.trim(), takeoverFind: takeover.checked, scrollMargin: Number(margin.value), sites: { ...latest.sites, [location.origin]: site.value as 'ask' | 'allow' | 'disabled' } });
+        savePreferences({ ...latest, scope: scope.value as Scope, shortcut: shortcut.value.trim(), takeoverFind: takeover.checked, scrollMargin: Number(margin.value), sites: { ...latest.sites, [location.origin]: site.value as 'allow' | 'disabled' } });
         this.message.textContent = '普通设置已保存，Key 未修改。'; this.preferencesChanged();
       } catch { this.message.textContent = '设置格式不正确。快捷键示例 Mod+Shift+F，间距须为 0–400。'; }
     };
@@ -92,7 +97,7 @@ export class SettingsPanel {
       try { importPreferences(json.value); this.preferencesChanged(); this.message.textContent = '设置已导入，Key 未修改；重新打开设置可查看。'; }
       catch { this.message.textContent = '导入失败：只接受普通设置，不接受凭据或未知字段。'; }
     }));
-    details.append(label, shortcut, takeoverLabel, marginLabel, margin, site, controls, json); this.node.append(details);
+    details.append(scopeLabel, scope, element('p', '页面变化会自动在本地重新提取，不自动发送。选区模式需先选中文字再打开搜索；私密页面建议禁用检索。', 'muted'), label, shortcut, takeoverLabel, marginLabel, margin, site, controls, json); this.node.append(details);
   }
   dispose(): void { this.invalidateTest(); this.key.value = ''; this.key.type = 'password'; this.unsubscribe(); this.node.remove(); }
 }

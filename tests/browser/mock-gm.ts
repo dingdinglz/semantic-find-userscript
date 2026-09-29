@@ -21,7 +21,13 @@ Object.assign(globalThis, {
     const captured = { status: state.status, value: state.value, ignoreAbort: state.ignoreAbort };
     const timer = setTimeout(() => {
       const body = details.data ? JSON.parse(details.data) : undefined;
-      const answers = body ? Object.fromEntries(Object.entries(body.state.targets).map(([id, target]: [string, any]) => [`match_${id}`, { type: 'noul', noul: body.state.query === 'absence' ? 0.02 : body.state.query === 'uncertain' ? 0.5 : /不足以支持|不能创建新项目|不能给出确定|这句话重复/u.test(target.text) ? captured.value : 0.02 }])) : undefined;
+      const answers = body ? Object.fromEntries(body.state.candidates.map((id: string) => {
+        const target = body.state.document[id];
+        const value = body.state.query === 'absence' ? 0.02 : body.state.query === 'uncertain' ? 0.25 + Number(id.slice(1)) % 5 * 0.1
+          : /python/iu.test(body.state.query) ? target.text === 'Python' ? 0.93 : 0.02
+          : /不足以支持|不能创建新项目|不能给出确定|这句话重复/u.test(target.text) ? captured.value : 0.02;
+        return [`match_${id}`, { type: 'noul', noul: value }];
+      })) : undefined;
       details.onload({ status: captured.status, finalUrl: details.url, responseHeaders: '', responseText: JSON.stringify(body ? { model: 'jev-1.13.0', answers, usage: { input_tokens: 100, output_tokens: 10 } } : { models: [{ name: 'jev-latest', description: 'Test alias', release_date: '2026-01-01' }] }) });
     }, state.delay);
     return { abort() { state.aborts++; if (!captured.ignoreAbort) { clearTimeout(timer); details.onabort(); } } };

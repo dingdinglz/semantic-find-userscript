@@ -1,3 +1,4 @@
+import type { Scope } from '../../shared/types';
 import { excluded, OWN_ATTR, readable } from './walker';
 function owned(node: Node): boolean {
   const el = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
@@ -6,27 +7,28 @@ function owned(node: Node): boolean {
 export class ContentObserver {
   private observer?: MutationObserver;
   disconnect(): void { this.observer?.disconnect(); this.observer = undefined; }
-  watch(root: Element, invalidate: (added: boolean) => void): void {
+  watch(root: Element, invalidate: (added: boolean) => void, scope: Scope = 'loaded-page'): void {
     this.disconnect();
     const states = new Map<Element, boolean>();
     const cache = new WeakMap<Element, boolean>();
-    for (const el of [root, ...root.querySelectorAll('*')]) if (!owned(el)) states.set(el, readable(el, cache));
+    for (const el of [root, ...root.querySelectorAll('*')]) if (!owned(el)) states.set(el, readable(el, cache, scope));
     const relevant = (record: MutationRecord): boolean => {
       if (owned(record.target)) return false;
       const target = record.target.nodeType === Node.ELEMENT_NODE ? record.target as Element : record.target.parentElement;
       if (!target) return false;
       if (record.type === 'attributes') {
+        if (record.attributeName === 'role' && root.contains(target)) return true;
         // Layout-only mutations leave the text snapshot intact, but visibility or exclusion changes do not.
         const nextCache = new WeakMap<Element, boolean>();
-        for (const [el, visible] of states) if (readable(el, nextCache) !== visible) return true;
+        for (const [el, visible] of states) if (readable(el, nextCache, scope) !== visible) return true;
         return false;
       }
-      if (record.type === 'characterData') return root.contains(target) && !excluded(target) && readable(target);
+      if (record.type === 'characterData') return root.contains(target) && !excluded(target, scope) && readable(target, undefined, scope);
       const changed = [...record.addedNodes, ...record.removedNodes].filter(n => !owned(n));
       if (!changed.length) return false;
       if (!root.isConnected || changed.some(n => n === root || n.contains(root))) return true;
-      if (!root.contains(target) || excluded(target) || !readable(target)) return false;
-      return changed.some(n => n.nodeType === Node.TEXT_NODE ? !!n.textContent?.trim() : n instanceof Element && !excluded(n) && !n.matches('script,style,link,meta'));
+      if (!root.contains(target) || excluded(target, scope) || !readable(target, undefined, scope)) return false;
+      return changed.some(n => n.nodeType === Node.TEXT_NODE ? !!n.textContent?.trim() : n instanceof Element && !excluded(n, scope) && !n.matches('script,style,link,meta'));
     };
     this.observer = new MutationObserver(records => {
       const changes = records.filter(relevant); if (!changes.length) return;

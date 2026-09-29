@@ -56,6 +56,34 @@ describe('original DOM extraction and UTF-16 anchoring', () => {
     expect(passages.flatMap(passageRanges).map(r => r.toString()).join('')).toBe(text.trim());
     expect(passages.every(p => !/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/u.test(p.text))).toBe(true);
   });
+  it('extracts independently anchored navigation, sidebar, header, footer and heading text in page scope', async () => {
+    const snapshot = await extractSnapshot('loaded-page', undefined, 0, 1);
+    expect(snapshot.passages.map(p => p.text).join('\n')).not.toContain('SECRET_');
+    const python = snapshot.passages.find(p => p.text === 'Python')!;
+    expect(python).toMatchObject({ kind: 'link', region: 'sidebar', headingPath: ['SDK 用法'] });
+    expect(passageRanges(python).map(r => r.toString()).join('')).toBe('Python');
+    expect(python.container.id).toBe('python-nav');
+    expect(snapshot.passages.some(p => p.region === 'navigation')).toBe(true);
+    expect(snapshot.passages.some(p => p.region === 'footer')).toBe(true);
+    expect(snapshot.passages.find(p => p.text === '追加正文')).toMatchObject({ kind: 'control', region: 'header' });
+    expect(snapshot.passages.find(p => p.text === '研究限制')).toMatchObject({ kind: 'heading', region: 'content' });
+    expect(snapshot.passages.find(p => p.container.id === 'uncertain')!.headingPath).not.toContain('SDK 用法');
+    const article = await extractSnapshot('article', undefined, 0, 1);
+    expect(article.passages.some(p => p.text === 'Python' || p.region === 'sidebar')).toBe(false);
+  });
+  it('supports a sidebar-only selection without sending neighboring entries or outside headings', async () => {
+    const range = document.createRange(); range.selectNodeContents(document.querySelector('#python-nav')!);
+    const snapshot = await extractSnapshot('selection', range, 0, 1);
+    expect(snapshot.passages.map(p => p.text)).toEqual(['Python']);
+    expect(snapshot.passages[0].headingPath).toEqual([]);
+    expect(snapshot.passages[0].before + snapshot.passages[0].after).toBe('');
+  });
+  it('keeps short adjacent links separate even in a sidebar without a landmark tag', async () => {
+    document.body.innerHTML = '<div class="sidebar"><a>Python</a><a>JavaScript</a><button>API reference</button></div>';
+    const snapshot = await extractSnapshot('loaded-page', undefined, 0, 1);
+    expect(snapshot.passages.map(p => p.text)).toEqual(['Python', 'JavaScript', 'API reference']);
+    expect(snapshot.passages.map(p => p.kind)).toEqual(['link', 'link', 'control']);
+  });
   it('does not silently fall back to the entire page', async () => {
     document.body.innerHTML = '<div>A plain page without a reliable article root.</div>';
     await expect(extractSnapshot('article', undefined, 0, 1)).rejects.toMatchObject({ code: 'scope' });

@@ -4,7 +4,7 @@ import { SPLIT_VERSION } from '../extract/passages';
 export class SearchCache {
   private entries = new Map<string, Map<string, Judgment>>();
   key(snapshot: PageSnapshot, query: string, credentialId: string): string {
-    return JSON.stringify([snapshot.id, snapshot.digest, snapshot.passages.map(p => [p.id, p.textHash, p.headingPath, p.before, p.after]), query.trim(), MODEL, PROMPT_VERSION, SPLIT_VERSION, credentialId]);
+    return JSON.stringify([snapshot.id, snapshot.digest, snapshot.passages.map(p => [p.id, p.textHash, p.headingPath, p.before, p.after, p.kind, p.region]), query.trim(), MODEL, PROMPT_VERSION, SPLIT_VERSION, credentialId]);
   }
   get(key: string): Map<string, Judgment> { return new Map(this.entries.get(key)); }
   set(key: string, value: Map<string, Judgment>): void {

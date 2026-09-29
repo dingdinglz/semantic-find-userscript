@@ -10,10 +10,32 @@ describe('TypeSafe protocol and budgets', () => {
     const p = passage(1, '<script>untrusted text</script>');
     const request = buildRequest('where?', [p]);
     expect(Object.keys(request).sort()).toEqual(['model', 'questions', 'state']);
-    expect(Object.keys(request.state.targets[p.id]).sort()).toEqual(['after', 'before', 'headingPath', 'text']);
-    expect(request.questions.match_b00001.instructions.task).toContain('targets.b00001.text');
+    expect(Object.keys(request.state.document[p.id]).sort()).toEqual(['headingPath', 'kind', 'region', 'text']);
+    expect(request.state.candidates).toEqual([p.id]);
+    expect(request.questions.match_b00001.instructions.task).toContain('document.b00001');
     expect(request.questions.match_b00001.instructions.boundary).toContain('untrusted');
     expect(JSON.stringify(request)).not.toMatch(/container|slices|apiKey|snapshotId|credentialId/);
+  });
+  it('shares the full scope across candidate batches, including distant context and navigation', () => {
+    const paragraphs = Array.from({ length: 50 }, (_, i) => passage(i + 1, `Full original context ${i}.`));
+    paragraphs[0].kind = 'link'; paragraphs[0].region = 'sidebar'; paragraphs[0].text = 'Python';
+    const plan = batches('Python 的用法', paragraphs);
+    expect(plan.length).toBeGreaterThan(1);
+    for (const batch of plan) {
+      expect(batch.context).toEqual(paragraphs);
+      const request = buildRequest('Python 的用法', batch.passages, batch.context);
+      expect(Object.keys(request.state.document)).toHaveLength(50);
+      expect(request.state.document.b00001).toMatchObject({ text: 'Python', kind: 'link', region: 'sidebar' });
+      expect(request.state.document.b00050.text).toBe('Full original context 49.');
+      expect(Object.keys(request.questions)).toHaveLength(batch.passages.length);
+      expect(Object.values(request.questions)[0].instructions.navigation).toContain('Python usage');
+    }
+  });
+  it('rejects candidates absent from or inconsistent with the shared document', () => {
+    const p = passage(1);
+    expect(() => buildRequest('q', [p], [])).toThrow();
+    expect(() => buildRequest('q', [p], [{ ...p, text: 'Different source' }])).toThrow();
+    expect(() => buildRequest('q', [p], [p, p])).toThrow();
   });
   it.each([NaN, Infinity, -0.1, 1.1, '0.9', null, undefined])('rejects invalid probabilities %s', value => {
     const payload = response(['b00001']); (payload.answers.match_b00001 as { noul: unknown }).noul = value;
@@ -33,13 +55,16 @@ describe('TypeSafe protocol and budgets', () => {
   it('scans every candidate, respects serialized question budgets, and never confuses CJK with chars/4', () => {
     const paragraphs = Array.from({ length: 100 }, (_, i) => passage(i + 1, '中文条件与例外。'.repeat(90)));
     const result = batches('中文问题', paragraphs);
-    expect(result.flat()).toEqual(paragraphs); expect(result.every(b => b.length <= 16 && fits('中文问题', b))).toBe(true);
+    expect(result.flatMap(b => b.passages)).toEqual(paragraphs);
+    expect(result.every(b => b.passages.length <= 16 && fits('中文问题', b.passages, b.context))).toBe(true);
+    expect(result.some(b => b.context.length > b.passages.length)).toBe(true);
+    expect(new Set(result.flatMap(b => b.context.map(p => p.id))).size).toBe(paragraphs.length);
     expect(requestBudget('中文问题', [paragraphs[0]]).longest).toBeGreaterThan(paragraphs[0].text.length * 3);
   });
-  it('subdivides oversized single passages before consent without losing ranges', () => {
+  it('subdivides oversized single passages before planning without losing ranges', () => {
     const snap = snapshot(1); snap.passages = [passage(1, '😀 long condition. '.repeat(4000))];
     const fitted = fitSnapshot(snap, 'where?'); expect(fitted.id).not.toBe(snap.id); expect(fitted.passages.length).toBeGreaterThan(1);
     expect(fitted.passages.flatMap(passageRanges).map(r => r.toString()).join('')).toBe(snap.passages[0].text);
-    expect(batches('where?', fitted.passages).flat()).toEqual(fitted.passages);
+    expect(batches('where?', fitted.passages).flatMap(b => b.passages)).toEqual(fitted.passages);
   });
 });

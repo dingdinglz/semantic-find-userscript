@@ -3,6 +3,7 @@ export type TextSlice = { node: Text; nodeStart: number; nodeEnd: number; rawSta
 export type LocalPassage = {
   id: string; order: number; text: string; normalizedText: string;
   headingPath: string[]; before: string; after: string;
+  kind: 'content' | 'heading' | 'link' | 'control'; region: 'content' | 'navigation' | 'sidebar' | 'header' | 'footer' | 'page';
   slices: TextSlice[]; textHash: string; container: Element;
 };
 export type PageSnapshot = {
@@ -16,11 +17,11 @@ export type SearchRun = {
   runId: string; pageEpoch: number; snapshotId: string; revision: number; credentialId: string;
   query: string; total: number; completed: number; failed: number;
   status: 'running' | 'complete' | 'partial' | 'cancelled' | 'stale';
-  judgments: Map<string, Judgment>; requests: number; retries: number; usage: Usage; error?: string;
+  judgments: Map<string, Judgment>; requests: number; retries: number; usage: Usage; error?: string; windowed?: boolean;
 };
 export type Preferences = {
-  schemaVersion: 1; shortcut: string; takeoverFind: boolean; scrollMargin: number;
-  sites: Record<string, 'ask' | 'allow' | 'disabled'>;
+  schemaVersion: 1; shortcut: string; takeoverFind: boolean; scrollMargin: number; scope: Scope;
+  sites: Record<string, 'allow' | 'disabled'>;
 };
 export type GMResponse = { status: number; responseText: string; responseHeaders: string; finalUrl?: string };
 export type GMRequestDetails = {

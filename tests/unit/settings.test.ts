@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Credentials, cleanKey, credentialLabel, readCredential } from '../../src/userscript/settings/credentials';
-import { exportPreferences, importPreferences, preferences } from '../../src/userscript/settings/preferences';
+import { exportPreferences, importPreferences, preferences, parsePreferences, savePreferences, SETTINGS_KEY } from '../../src/userscript/settings/preferences';
 import { credential, mockGM } from './helpers';
 beforeEach(() => mockGM());
 describe('credential storage boundaries', () => {
@@ -19,6 +19,16 @@ describe('credential storage boundaries', () => {
     credentials.save('new-placeholder'); expect(changed).toHaveBeenCalledTimes(1);
     gm.set('semanticFind.credentials', { ...credential, id: 'remote-new' }, true); expect(changed).toHaveBeenCalledTimes(2);
     gm.set('semanticFind.credentials', undefined, true); expect(changed).toHaveBeenCalledTimes(3); credentials.dispose(); expect(gm.listeners.size).toBe(0);
+  });
+  it('persists the scope and migrates old settings without losing disabled sites', () => {
+    const gm = mockGM();
+    expect(preferences().scope).toBe('loaded-page');
+    savePreferences({ ...preferences(), scope: 'article' }); expect(preferences().scope).toBe('article');
+    importPreferences(JSON.stringify({ ...preferences(), scope: 'selection' })); expect(preferences().scope).toBe('selection');
+    const { scope, ...legacy } = preferences();
+    gm.set(SETTINGS_KEY, { ...legacy, sites: { 'https://example.com': 'ask', 'https://private.com': 'disabled' } });
+    expect(preferences()).toMatchObject({ scope: 'loaded-page', sites: { 'https://example.com': 'allow', 'https://private.com': 'disabled' } });
+    expect(() => parsePreferences({ ...preferences(), scope: 'everything' })).toThrow();
   });
   it('never permits imported preferences to overwrite credentials', () => {
     const gm = mockGM(credential);

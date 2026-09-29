@@ -1,10 +1,12 @@
 import type { Scope } from '../../shared/types';
 import { FindError, checkAbort } from '../../shared/errors';
-import { collectText } from './walker';
+import { collectText, OWN_ATTR } from './walker';
 export function captureSelection(): Range | undefined {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return undefined;
   const range = selection.getRangeAt(0).cloneRange();
+  const parent = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ? range.commonAncestorContainer as Element : range.commonAncestorContainer.parentElement;
+  if (parent?.closest(`[${OWN_ATTR}]`) || range.commonAncestorContainer.getRootNode() !== document) return undefined;
   return range.toString().trim() ? range : undefined;
 }
 export async function resolveScope(scope: Scope, selection?: Range, signal?: AbortSignal): Promise<Element> {
@@ -19,7 +21,7 @@ export async function resolveScope(scope: Scope, selection?: Range, signal?: Abo
   let best: Element | undefined; let bestScore = 0;
   for (const candidate of candidates) {
     checkAbort(signal);
-    const texts = await collectText(candidate, undefined, signal);
+    const texts = await collectText(candidate, undefined, signal, 'article');
     let length = 0, linked = 0;
     for (const { node } of texts) { length += node.length; if (node.parentElement?.closest('a')) linked += node.length; }
     const paragraphs = candidate.querySelectorAll('p,li,blockquote,pre,tr').length;

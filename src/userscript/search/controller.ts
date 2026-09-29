@@ -22,10 +22,12 @@ export class SearchController {
     this.cancel();
     if (readCredential()?.id !== credentialId) throw new FindError('auth');
     const key = this.cache.key(snapshot, query, credentialId), judgments = this.cache.get(key);
-    const queue = batches(query, snapshot.passages.filter(p => !judgments.has(p.id)));
+    // Plan against the complete snapshot, then skip cached questions, never cached context.
+    const plan = batches(query, snapshot.passages);
+    const queue = plan.map(batch => ({ ...batch, passages: batch.passages.filter(p => !judgments.has(p.id)) })).filter(batch => batch.passages.length);
     const previous = this.run?.snapshotId === snapshot.id && this.run.query === query && this.run.credentialId === credentialId ? this.run : undefined;
     const run: SearchRun = { runId: uid(), pageEpoch: snapshot.pageEpoch, snapshotId: snapshot.id, revision: snapshot.revision, credentialId, query,
-      total: snapshot.passages.length, completed: judgments.size, failed: 0, status: 'running', judgments,
+      total: snapshot.passages.length, completed: judgments.size, failed: 0, status: 'running', judgments, windowed: plan.some(batch => batch.context.length < snapshot.passages.length),
       requests: previous?.requests ?? 0, retries: previous?.retries ?? 0, usage: previous ? { ...previous.usage } : { input_tokens: 0, output_tokens: 0 } };
     this.run = run; const abort = new AbortController(); this.abort = abort; const deadline = Date.now() + this.budgetMs;
     const valid = () => this.run === run && run.runId === this.run.runId && !abort.signal.aborted && run.status === 'running' &&
@@ -36,15 +38,15 @@ export class SearchController {
       while (queue.length && valid()) {
         const batch = queue.shift()!;
         try {
-          const results = await this.client.evaluateBatch(query, batch, { credentialId, signal: abort.signal, deadline, valid,
+          const results = await this.client.evaluateBatch(query, batch.passages, { credentialId, signal: abort.signal, deadline, valid,
             attempt: retry => { if (valid()) { run.requests++; if (retry) run.retries++; } },
-            used: usage => { if (valid()) { run.usage.input_tokens += usage.input_tokens; run.usage.output_tokens += usage.output_tokens; } } });
+            used: usage => { if (valid()) { run.usage.input_tokens += usage.input_tokens; run.usage.output_tokens += usage.output_tokens; } } }, batch.context);
           if (!valid()) return;
           results.forEach(j => run.judgments.set(j.id, j)); run.completed = run.judgments.size;
           this.cache.set(key, run.judgments); this.update(run);
         } catch (error) {
           if (!valid()) return;
-          run.failed += batch.length; run.error = safeMessage(error);
+          run.failed += batch.passages.length; run.error = safeMessage(error);
           if (error instanceof FindError && ['compatibility', 'auth', 'stale', 'budget', 'protocol', 'length'].includes(error.code)) {
             run.status = error.code === 'stale' ? 'stale' : 'partial'; abort.abort();
           }

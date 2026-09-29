@@ -25,6 +25,9 @@ export class Panel {
   private title = element('h2', '按意思查找'); private settingsButton: HTMLButtonElement;
   constructor(private actions: PanelActions) {
     this.host.setAttribute(OWN_ATTR, 'panel'); this.shadow = this.host.attachShadow({ mode: 'open' });
+    // Outside Shadow DOM the target is our div host, so page hotkeys may not recognize an input.
+    // Stop bubbling only: preserve control handlers, native editing and our document-capture shortcuts.
+    for (const type of ['keydown', 'keypress', 'keyup']) this.shadow.addEventListener(type, event => event.stopPropagation());
     const style = element('style', PANEL_CSS); this.shadow.append(style, this.box);
     this.box.setAttribute('role', 'dialog'); this.box.setAttribute('aria-label', '按意思查找');
     this.settingsButton = button('设置', actions.settings);

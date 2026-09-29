@@ -1362,6 +1362,7 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
       this.actions = actions;
       this.host.setAttribute(OWN_ATTR, "panel");
       this.shadow = this.host.attachShadow({ mode: "open" });
+      for (const type of ["keydown", "keypress", "keyup"]) this.shadow.addEventListener(type, (event) => event.stopPropagation());
       const style = element("style", PANEL_CSS);
       this.shadow.append(style, this.box);
       this.box.setAttribute("role", "dialog");

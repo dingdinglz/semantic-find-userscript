@@ -43,6 +43,39 @@ async function browser(...args: string[]): Promise<string> {
   const { stdout } = await exec('agent-browser', ['--session', session, ...args], { timeout: 40000, maxBuffer: 1024 * 1024 }); return stdout.trim();
 }
 async function evaluate<T = any>(code: string): Promise<T> { return JSON.parse(await browser('eval', code)); }
+async function typeKeys(text: string): Promise<void> {
+  // CLI 0.21.4 mis-sends printable keys; keyboard type inserts text without usable key events.
+  // Use its isolated browser's CDP connection for real keydown/keypress/keyup with correct key codes.
+  const socket = new WebSocket(await browser('get', 'cdp-url')); let nextId = 0;
+  function send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<any> {
+    const id = ++nextId;
+    return new Promise((resolve, reject) => {
+      const receive = (event: MessageEvent) => {
+        const message = JSON.parse(event.data); if (message.id !== id) return;
+        clearTimeout(timer); socket.removeEventListener('message', receive);
+        if (message.error) reject(new Error(message.error.message)); else resolve(message.result);
+      };
+      const timer = setTimeout(() => { socket.removeEventListener('message', receive); reject(new Error(`CDP timeout: ${method}`)); }, 10000);
+      socket.addEventListener('message', receive); socket.send(JSON.stringify({ id, method, params, sessionId }));
+    });
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('CDP connection timeout')), 10000);
+      socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+      socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('CDP connection failed')); }, { once: true });
+    });
+    const { targetInfos } = await send('Target.getTargets');
+    const target = targetInfos.find((t: { type: string; url: string }) => t.type === 'page' && t.url.startsWith(base));
+    assert.ok(target, 'Missing browser fixture target');
+    const { sessionId } = await send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+    for (const key of text) {
+      const params = { key, code: `Key${key.toUpperCase()}`, windowsVirtualKeyCode: key.toUpperCase().charCodeAt(0) };
+      await send('Input.dispatchKeyEvent', { ...params, type: 'keyDown', text: key }, sessionId);
+      await send('Input.dispatchKeyEvent', { ...params, type: 'keyUp' }, sessionId);
+    }
+  } finally { socket.close(); }
+}
 const panel = `document.querySelector('[data-semantic-find-owned="panel"]').shadowRoot`;
 async function panelText() { return evaluate<string>(`${panel}.textContent`); }
 async function waitFor(code: string) {
@@ -61,6 +94,11 @@ async function open() {
 try {
   await browser('--ignore-https-errors', 'open', base + '/article'); await open();
   assert.equal(await evaluate('__sfTest.traversals'), 0); assert.equal(await evaluate('__sfTest.calls.length'), 0); passed('未配置 Key：只打开设置，不遍历、不联网');
+  await browser('fill', '#sf-api-key', ''); await typeKeys('si');
+  assert.equal(await evaluate(`${panel}.querySelector('#sf-api-key').value`), 'si');
+  assert.deepEqual(await evaluate('__sfTest.pageKeys'), []);
+  await browser('press', 'Tab'); assert.equal(await evaluate(`${panel}.activeElement.textContent`), '显示');
+  passed('设置中真实输入 s / i 不触发页面快捷键，Tab 仍可切换焦点');
   await browser('fill', '#sf-api-key', 'browser-test-placeholder'); await browser('click', 'button:has-text("测试草稿")');
   await waitFor(`${panel}.textContent.includes('连接成功')`);
   assert.equal(await evaluate('__sfTest.traversals'), 0); assert.equal(await evaluate('__sfTest.calls[0].method'), 'GET'); passed('连接测试仅请求 models，不提取正文');
@@ -75,6 +113,12 @@ try {
   await browser('click', 'button:has-text("返回搜索")'); await ready();
   assert.equal((await posts()).length, 0); assert.equal(await evaluate(`${panel}.querySelectorAll('select').length`), 0);
   assert.ok(!(await panelText()).includes('重新提取')); passed('默认全页范围；返回搜索不推理，搜索页没有范围选择和手动提取');
+  await browser('fill', 'input[aria-label="按意思查找的查询"]', ''); await typeKeys('si');
+  assert.equal(await evaluate(`${panel}.querySelector('input').value`), 'si');
+  assert.deepEqual(await evaluate('__sfTest.pageKeys'), []);
+  await evaluate('document.querySelector("#append").focus(); true'); await typeKeys('s');
+  assert.ok(await evaluate('__sfTest.pageKeys.some(e => e.type === "keydown" && e.key === "s")'));
+  passed('搜索框真实输入 s / i 不触发页面快捷键，面板外快捷键保持有效');
   await browser('fill', 'input[aria-label="按意思查找的查询"]', '没有把握在哪里');
   await evaluate(`${panel}.querySelector('input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,composed:true})); true`);
   assert.equal((await posts()).length, 0);

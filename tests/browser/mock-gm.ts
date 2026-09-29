@@ -3,8 +3,15 @@ import type { GMRequestDetails } from '../../src/shared/types';
 const values = new Map<string, unknown>(), listeners = new Map<number, { key: string; fn: Function }>(); let next = 0;
 const state = { calls: [] as { method: string; url: string; data?: string; anonymous: boolean; redirect: string; referer: string; auth: string }[],
   delay: 80, status: 200, value: 0.93, ignoreAbort: false, traversals: 0, aborts: 0, menus: {} as Record<string, () => void>,
+  pageKeys: [] as { type: string; key: string }[],
   setCredential: (id: string | null) => set('semanticFind.credentials', id ? { schemaVersion: 1, id, apiKey: 'browser-test-placeholder' } : undefined, true),
 };
+// Mimic site hotkeys that skip light-DOM inputs but see only the host for shadow inputs.
+for (const type of ['keydown', 'keypress', 'keyup'] as const) document.addEventListener(type, event => {
+  if (event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable]')) return;
+  if (!['s', 'i'].includes(event.key)) return;
+  state.pageKeys.push({ type, key: event.key }); event.preventDefault();
+});
 const walker = document.createTreeWalker.bind(document);
 document.createTreeWalker = (...args: Parameters<Document['createTreeWalker']>) => { state.traversals++; return walker(...args); };
 function set(key: string, value: unknown, remote = false) { const old = values.get(key); if (value === undefined) values.delete(key); else values.set(key, value); listeners.forEach(l => { if (l.key === key) l.fn(key, old, value, remote); }); }

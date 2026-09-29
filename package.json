@@ -1,0 +1,31 @@
+{
+  "name": "semantic-find-userscript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Find original webpage passages by meaning with TypeSafe Jev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dingdinglz/semantic-find-userscript.git"
+  },
+  "homepage": "https://github.com/dingdinglz/semantic-find-userscript#readme",
+  "bugs": { "url": "https://github.com/dingdinglz/semantic-find-userscript/issues" },
+  "keywords": ["tampermonkey", "userscript", "semantic-search", "typesafe-ai", "jev", "typescript"],
+  "scripts": {
+    "build": "node --experimental-strip-types scripts/build-userscript.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "node --experimental-strip-types scripts/browser-test.ts",
+    "evaluate": "node --experimental-strip-types scripts/evaluate.ts",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "engines": { "node": ">=22.18" },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

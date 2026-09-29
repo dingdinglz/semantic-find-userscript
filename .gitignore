@@ -1,0 +1,11 @@
+node_modules/
+.agents/
+.DS_Store
+coverage/
+.browser-test/
+test-results/
+*.local.json
+.env*
+*.pem
+*.key
+*.p12

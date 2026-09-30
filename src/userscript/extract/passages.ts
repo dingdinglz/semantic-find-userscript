@@ -18,8 +18,8 @@ function kind(container: Element): LocalPassage['kind'] {
   return container.matches('button,[role="button"],summary') ? 'control' : 'content';
 }
 type Block = { container: Element; text: string; slices: TextSlice[]; headingPath: string[] };
-function owner(node: Text, root: Element): Element {
-  let el = node.parentElement!; let block: Element | undefined;
+function owner(el: Element, root: Element): Element {
+  let block: Element | undefined;
   const standalone = ['navigation', 'sidebar', 'header', 'footer'].includes(region(el)) || !el.closest('p,blockquote,pre,td,th');
   while (true) {
     // Keep navigation entries separate so a short label highlights only its own link.
@@ -61,15 +61,15 @@ export async function extractSnapshot(scope: Scope, selection: Range | undefined
   const root = await resolveScope(scope, selection, signal);
   const entries = await collectText(root, scope === 'selection' ? selection : undefined, signal, scope);
   const blocks: Block[] = []; let previous: Text | undefined;
-  for (const { node, start, end } of entries) {
-    const container = owner(node, root);
+  for (const { node, parent, text, start, end } of entries) {
+    const container = owner(parent, root);
     let block = blocks.at(-1);
     if (!block || block.container !== container) {
       block = { container, text: '', slices: [], headingPath: [] }; blocks.push(block); previous = undefined;
     }
     // Separators have no TextSlice: never highlight excluded DOM between visible slices.
     if (previous && (previous.parentElement?.closest('td,th,p') !== node.parentElement?.closest('td,th,p') || previous.nextSibling?.nodeName === 'BR')) block.text += '\n';
-    const rawStart = block.text.length; block.text += node.data.slice(start, end);
+    const rawStart = block.text.length; block.text += text;
     block.slices.push({ node, nodeStart: start, nodeEnd: end, rawStart, rawEnd: block.text.length }); previous = node;
   }
   const headingsByRegion = new Map<Element, string[]>(); const targets: Block[] = [];

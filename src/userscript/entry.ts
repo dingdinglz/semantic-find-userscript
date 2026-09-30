@@ -4,7 +4,6 @@ import { Credentials, readCredential } from './settings/credentials';
 import { preferences, SETTINGS_KEY, siteMode } from './settings/preferences';
 import { captureSelection } from './extract/scope';
 import { extractSnapshot } from './extract/passages';
-import { ContentObserver } from './extract/observe';
 import { scrollToPassage } from './extract/anchors';
 import { TypeSafeClient } from './typesafe/client';
 import { SearchController } from './search/controller';
@@ -19,10 +18,9 @@ class SemanticFind {
   private controller = new SearchController(this.client, run => this.render(run));
   private panel?: Panel; private highlight?: Highlighter;
   private snapshot?: PageSnapshot; private selection?: Range; private focus?: HTMLElement;
-  private epoch = 0; private revision = 0; private extraction = 0; private submission = 0;
-  private extracting?: AbortController; private observer = new ContentObserver();
-  private inSettings = false; private refreshTimer?: ReturnType<typeof setTimeout>;
-  private pendingSearch?: { query: string; credentialId: string };
+  private epoch = 0; private revision = 0; private submission = 0;
+  private extracting?: { query: string; abort: AbortController };
+  private inSettings = false;
   private activeId?: string; private currentURL = location.href; private routeTimer?: ReturnType<typeof setInterval>;
   constructor() {
     GM_registerMenuCommand('按意思查找', () => this.open());
@@ -47,14 +45,14 @@ class SemanticFind {
     if (this.panel) return this.panel;
     this.focus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     this.selection = captureSelection();
-    this.panel = new Panel({ close: () => this.close(), settings: () => this.settings(), search: () => void this.search(),
+    this.panel = new Panel({ close: () => this.close(), settings: () => this.settings(), search: () => void this.search(), resume: () => void this.search(true),
       stop: () => {
-        const waiting = !!this.pendingSearch;
-        this.submission++; this.pendingSearch = undefined; this.controller.cancel();
-        if (waiting) { this.panel?.clearResults(); this.panel?.setStatus('已停止等待搜索。页面文本仍会在本地自动更新。'); }
+        const waiting = !!this.extracting;
+        this.cancelSubmission(); this.controller.cancel();
+        if (waiting) { this.panel?.clearResults(); this.panel?.setStatus('已停止提取和搜索。再次查找时会读取最新页面文本。'); }
       },
       select: p => this.select(p), navigate: direction => this.navigate(direction),
-      queryChanged: () => { this.submission++; this.pendingSearch = undefined; this.controller.cancel(); this.controller.run = undefined; this.highlight?.clear(); this.panel?.clearResults(); this.activeId = undefined; },
+      queryChanged: () => this.configurationChanged(),
       preferencesChanged: () => this.configurationChanged() });
     this.highlight = new Highlighter();
     this.currentURL = location.href; this.routeTimer = setInterval(() => this.route(), 750);
@@ -66,22 +64,23 @@ class SemanticFind {
     if (!readCredential()) { this.settings(); return; }
     this.inSettings = false; panel.showSearch(); this.route();
     if (preferences().sites[location.origin] === 'disabled') { panel.setStatus('本站已永久禁用检索，可在设置中恢复。'); return; }
-    if (!this.snapshot && !this.extracting && !this.refreshTimer) void this.extract();
+    if (!this.snapshot && !this.extracting) panel.ready(preferences().scope);
   }
-  private reset(keepPending = false): void {
-    this.submission++; this.extraction++; this.extracting?.abort(); this.extracting = undefined;
-    clearTimeout(this.refreshTimer); this.refreshTimer = undefined;
-    if (!keepPending) this.pendingSearch = undefined;
-    this.observer.disconnect(); this.controller.clear(); this.snapshot = undefined; this.activeId = undefined;
+  private cancelSubmission(): void {
+    this.submission++; this.extracting?.abort.abort(); this.extracting = undefined;
+  }
+  private reset(): void {
+    this.cancelSubmission(); this.controller.clear(); this.snapshot = undefined; this.activeId = undefined;
     this.highlight?.clear(); this.panel?.clearResults(); this.panel?.clearSnapshot();
   }
   private settings(): void {
     this.inSettings = true; this.reset(); this.panel?.showSettings(this.credentials, this.client, () => this.open());
   }
   private configurationChanged(): void {
-    this.refresh('配置已变化，旧任务已停止，正在自动重新提取。');
+    this.reset();
     if (!readCredential()) this.panel?.setStatus('请先在设置中配置 API Key。');
     else if (preferences().sites[location.origin] === 'disabled') this.panel?.setStatus('本站已永久禁用检索，可在设置中恢复。');
+    else if (!this.inSettings) this.panel?.ready(preferences().scope);
   }
   private close(): void {
     this.reset(); this.panel?.dispose(); this.panel = undefined; this.highlight?.dispose(); this.highlight = undefined;
@@ -91,62 +90,41 @@ class SemanticFind {
   private route(): void {
     if (location.href === this.currentURL) return;
     this.currentURL = location.href; this.epoch++; this.selection = undefined;
-    this.refresh('页面已导航，正在自动重新提取。');
+    this.reset();
+    if (this.panel && !this.inSettings) {
+      this.panel.ready(preferences().scope); this.panel.setStatus('页面已导航，请重新搜索以读取最新文本。');
+    }
   }
-  private refresh(message: string, keepPending = false): void {
-    this.reset(keepPending);
-    if (!this.panel || this.inSettings) return;
-    if (this.pendingSearch) this.panel.waitForExtraction(); else this.panel.setStatus(message);
-    if (!readCredential() || preferences().sites[location.origin] === 'disabled') return;
-    // Invalidate immediately, coalesce re-extraction. Refreshing locally never starts a new API search.
-    this.refreshTimer = setTimeout(() => { this.refreshTimer = undefined; void this.extract(); }, 250);
-  }
-  private invalidate(): void {
-    this.refresh('页面内容已变化，旧结果已清除，正在自动重新提取。', true);
-  }
-  private async extract(): Promise<void> {
-    this.reset(true);
-    const panel = this.panel; if (!panel || this.inSettings) return;
-    if (!readCredential()) { this.settings(); return; }
-    const prefs = preferences();
-    if (prefs.sites[location.origin] === 'disabled') { panel.setStatus('本站已永久禁用检索。'); return; }
-    const generation = this.extraction, abort = new AbortController(); this.extracting = abort;
-    if (this.pendingSearch) panel.waitForExtraction(); else panel.setStatus('正在本地提取页面文本；尚未发送任何文本…');
-    // Guard mutations DURING asynchronous extraction as well as after it.
-    this.observer.watch(document.body, () => this.invalidate(), prefs.scope);
-    try {
-      const snapshot = await extractSnapshot(prefs.scope, this.selection, this.epoch, ++this.revision, abort.signal);
-      if (generation !== this.extraction || panel !== this.panel || abort.signal.aborted) return;
-      this.snapshot = snapshot; panel.snapshot(snapshot); panel.clearResults();
-      panel.setStatus(snapshot.passages.length ? '页面文本已在本地准备好。输入查询后按 Enter 即可搜索。' : '没有读到可搜索的文本；可在设置中调整范围，或先选中文字再打开搜索。');
-      this.observer.watch(snapshot.root, () => this.invalidate(), prefs.scope);
-      const pending = this.pendingSearch; this.pendingSearch = undefined;
-      if (pending && pending.query === panel.query.value.trim() && pending.credentialId === readCredential()?.id) void this.search();
-    } catch (error) { if (generation === this.extraction) { this.pendingSearch = undefined; panel.clearResults(); panel.setStatus(safeMessage(error)); } }
-    finally { if (generation === this.extraction) this.extracting = undefined; }
-  }
-  private async search(): Promise<void> {
+  private async search(resume = false): Promise<void> {
     this.route();
     const panel = this.panel; if (!panel || this.inSettings) return;
     const query = panel.query.value.trim(); if (!query) { panel.query.focus(); return; }
     const credentialId = readCredential()?.id; if (!credentialId) { this.settings(); return; }
-    if (preferences().sites[location.origin] === 'disabled') return;
-    if (!this.snapshot) {
-      this.pendingSearch = { query, credentialId };
-      if (!this.extracting && !this.refreshTimer) void this.extract();
-      else panel.waitForExtraction();
-      return;
-    }
-    if (!this.snapshot.passages.length) { panel.setStatus('没有可搜索的文本，请在设置中调整范围。'); return; }
-    if (this.controller.run?.status === 'running' && this.controller.run.query === query && this.controller.run.snapshotId === this.snapshot.id) return;
-    const submission = ++this.submission;
+    const prefs = preferences(); if (prefs.sites[location.origin] === 'disabled') return;
+    const run = this.controller.run;
+    if (this.extracting?.query === query || run?.status === 'running' && run.query === query) return;
+    if (resume) {
+      if (!this.snapshot || !run || run.snapshotId !== this.snapshot.id || run.query !== query || run.credentialId !== credentialId ||
+        !['partial', 'cancelled'].includes(run.status)) return;
+    } else this.reset();
+    const submission = ++this.submission, epoch = this.epoch, url = location.href;
+    const valid = () => this.panel === panel && this.submission === submission && !this.inSettings && this.epoch === epoch &&
+      location.href === url && readCredential()?.id === credentialId && preferences().sites[location.origin] !== 'disabled';
     try {
-      const snapshot = fitSnapshot(this.snapshot, query); this.snapshot = snapshot; panel.snapshot(snapshot);
-      const url = location.href;
-      this.highlight?.clear(); this.activeId = undefined;
-      await this.controller.start(snapshot, query, credentialId, () => this.snapshot === snapshot && this.panel === panel && this.submission === submission &&
-        this.epoch === snapshot.pageEpoch && location.href === url && preferences().sites[location.origin] !== 'disabled');
-    } catch (error) { if (this.panel === panel && this.submission === submission) panel.setStatus(safeMessage(error)); }
+      let snapshot = this.snapshot;
+      if (!resume) {
+        const abort = new AbortController(); this.extracting = { query, abort }; panel.waitForExtraction();
+        // One bounded extraction per explicit search. DOM changes never cancel or refresh this run.
+        snapshot = await extractSnapshot(prefs.scope, this.selection, epoch, ++this.revision, abort.signal);
+        if (!valid() || abort.signal.aborted) return;
+        this.extracting = undefined;
+        snapshot = fitSnapshot(snapshot, query); this.snapshot = snapshot; panel.snapshot(snapshot); panel.clearResults();
+      }
+      if (!snapshot?.passages.length) { panel.setStatus('没有可搜索的文本，请在设置中调整范围。'); return; }
+      await this.controller.start(snapshot, query, credentialId, () => valid() && this.snapshot === snapshot);
+    } catch (error) {
+      if (valid()) { if (!resume) panel.clearResults(); panel.setStatus(safeMessage(error)); }
+    } finally { if (this.submission === submission) this.extracting = undefined; }
   }
   private render(run: SearchRun): void {
     const snapshot = this.snapshot; if (!snapshot || snapshot.id !== run.snapshotId || !this.panel) return;
@@ -162,7 +140,10 @@ class SemanticFind {
       scrollToPassage(passage, preferences().scrollMargin); this.highlight?.active(passage); this.activeId = passage.id;
       this.render(this.controller.run);
       this.panel?.setStatus(`已定位：${passageLabel(passage)}。${this.highlight?.mode === 'css' ? '' : this.highlight?.mode === 'overlay' ? '当前使用单处覆盖高亮。' : '高亮不可用，已滚动到原文。'}`);
-    } catch { this.invalidate(); }
+    } catch {
+      this.highlight?.clearActive(); this.activeId = passage.id; this.render(this.controller.run);
+      this.panel?.setStatus('该片段的原文已变化，暂时无法定位；搜索结果已保留。重新搜索可读取最新文本。');
+    }
   }
   private navigate(direction: number): void {
     if (!this.snapshot || !this.controller.run) return;

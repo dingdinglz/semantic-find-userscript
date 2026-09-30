@@ -9,7 +9,7 @@ export function passageRanges(passage: LocalPassage): Range[] {
   return passage.slices.map(s => { const range = document.createRange(); range.setStart(s.node, s.nodeStart); range.setEnd(s.node, s.nodeEnd); return range; });
 }
 // Only exact, unique matches within the original connected container and identical context qualify.
-// Lifecycle invalidation takes precedence: this helper must not revive stale model judgments.
+// Reanchoring must not replace the saved search text or its judgments.
 export function exactReanchor(passage: LocalPassage, candidates: LocalPassage[]): LocalPassage | undefined {
   if (!passage.container.isConnected) return undefined;
   const matches = candidates.filter(p => passage.container.contains(p.container) && p.text === passage.text &&

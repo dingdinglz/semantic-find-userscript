@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TypeSafeClient } from '../../src/userscript/typesafe/client';
 import { SearchController } from '../../src/userscript/search/controller';
 import { SearchCache } from '../../src/userscript/search/cache';
-import { ContentObserver } from '../../src/userscript/extract/observe';
 import { Highlighter } from '../../src/userscript/highlight/css-highlight';
 import { classify, resultStatus } from '../../src/userscript/ui/results';
 import { credential, mockGM, response, snapshot } from './helpers';
@@ -106,18 +105,18 @@ describe('search lifecycle, retry and cache', () => {
   });
 });
 describe('DOM changes, highlights and honest result states', () => {
-  it('invalidates text, added content and root replacement but ignores owned UI and layout-only changes', async () => {
-    document.body.innerHTML = '<article><p>Original text.</p></article>'; const root = document.querySelector('article')!;
-    const changed = vi.fn(), observer = new ContentObserver(); observer.watch(root, changed);
-    root.setAttribute('style', 'width:500px'); await Promise.resolve(); expect(changed).not.toHaveBeenCalled();
-    const panel = document.createElement('div'); panel.setAttribute('data-semantic-find-owned', 'panel'); root.append(panel); await Promise.resolve(); expect(changed).not.toHaveBeenCalled();
-    root.querySelector('p')!.firstChild!.textContent = 'Changed'; await Promise.resolve(); expect(changed).toHaveBeenCalledOnce();
-    observer.watch(root, changed); root.replaceWith(document.createElement('article')); await Promise.resolve(); expect(changed).toHaveBeenCalledTimes(2); observer.disconnect();
-  });
-  it('invalidates immediately when previously hidden content becomes readable', async () => {
-    document.body.innerHTML = '<article><p>Readable</p><details><summary>Title</summary><p>Secret</p></details></article>';
-    const observer = new ContentObserver(), changed = vi.fn(); observer.watch(document.querySelector('article')!, changed);
-    document.querySelector('details')!.open = true; await Promise.resolve(); expect(changed).toHaveBeenCalledOnce(); observer.disconnect();
+  it('skips changed anchors without removing other matches or disabling CSS highlights', () => {
+    const registry = new Map();
+    vi.stubGlobal('CSS', { highlights: registry, supports: () => true });
+    const Highlight = vi.fn(function (...ranges: Range[]) { return { ranges, priority: 0 }; });
+    vi.stubGlobal('Highlight', Highlight);
+    const snap = snapshot(3), highlighter = new Highlighter();
+    snap.passages[0].slices[0].node.data = 'Changed'; snap.passages[1].container.remove();
+    highlighter.matches(snap.passages);
+    expect(highlighter.mode).toBe('css'); expect(registry.size).toBe(1);
+    expect(Highlight.mock.calls.at(-1)).toHaveLength(1);
+    expect(Highlight.mock.calls.at(-1)![0].startContainer).toBe(snap.passages[2].slices[0].node);
+    highlighter.dispose(); vi.unstubAllGlobals();
   });
   it('clears only owned CSS Highlights and never mutates article text nodes', () => {
     const registry = new Map(); const pageHighlight = {}; registry.set('page-highlight', pageHighlight);

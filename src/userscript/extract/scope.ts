@@ -23,7 +23,7 @@ export async function resolveScope(scope: Scope, selection?: Range, signal?: Abo
     checkAbort(signal);
     const texts = await collectText(candidate, undefined, signal, 'article');
     let length = 0, linked = 0;
-    for (const { node } of texts) { length += node.length; if (node.parentElement?.closest('a')) linked += node.length; }
+    for (const { text, parent } of texts) { length += text.length; if (parent.closest('a')) linked += text.length; }
     const paragraphs = candidate.querySelectorAll('p,li,blockquote,pre,tr').length;
     const ratio = linked / Math.max(1, length);
     const score = length * (1 - ratio) ** 2 + Math.min(paragraphs, 200) * 30;

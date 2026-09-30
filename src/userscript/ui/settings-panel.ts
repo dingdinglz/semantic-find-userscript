@@ -97,7 +97,7 @@ export class SettingsPanel {
       try { importPreferences(json.value); this.preferencesChanged(); this.message.textContent = '设置已导入，Key 未修改；重新打开设置可查看。'; }
       catch { this.message.textContent = '导入失败：只接受普通设置，不接受凭据或未知字段。'; }
     }));
-    details.append(scopeLabel, scope, element('p', '页面变化会自动在本地重新提取，不自动发送。选区模式需先选中文字再打开搜索；私密页面建议禁用检索。', 'muted'), label, shortcut, takeoverLabel, marginLabel, margin, site, controls, json); this.node.append(details);
+    details.append(scopeLabel, scope, element('p', '仅在主动搜索前提取最新文本；页面变化不影响已有结果。选区模式需先选中文字再打开搜索；私密页面建议禁用检索。', 'muted'), label, shortcut, takeoverLabel, marginLabel, margin, site, controls, json); this.node.append(details);
   }
   dispose(): void { this.invalidateTest(); this.key.value = ''; this.key.type = 'password'; this.unsubscribe(); this.node.remove(); }
 }

@@ -1,5 +1,5 @@
 import type { LocalPassage } from '../../shared/types';
-import { passageRanges } from '../extract/anchors';
+import { passageRanges, validAnchor } from '../extract/anchors';
 import { uid } from '../../shared/utils';
 import { OWN_ATTR } from '../extract/walker';
 import { ActiveOverlay } from './active-overlay';
@@ -21,7 +21,7 @@ export class Highlighter {
   }
   matches(passages: LocalPassage[]): void {
     if (this.mode !== 'css') return;
-    try { this.api.CSS!.highlights!.set(this.names[0], new this.api.Highlight!(...passages.flatMap(passageRanges))); }
+    try { this.api.CSS!.highlights!.set(this.names[0], new this.api.Highlight!(...passages.filter(validAnchor).flatMap(passageRanges))); }
     catch { this.clear(); this.mode = 'overlay'; }
   }
   active(passage: LocalPassage): void {
@@ -32,6 +32,7 @@ export class Highlighter {
     }
     try { this.overlay.show(ranges); } catch { this.mode = 'none'; this.overlay.clear(); }
   }
-  clear(): void { this.names.forEach(name => this.api.CSS?.highlights?.delete(name)); this.overlay.clear(); }
+  clearActive(): void { this.api.CSS?.highlights?.delete(this.names[1]); this.overlay.clear(); }
+  clear(): void { this.api.CSS?.highlights?.delete(this.names[0]); this.clearActive(); }
   dispose(): void { this.clear(); this.style?.remove(); }
 }

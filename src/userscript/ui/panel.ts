@@ -1,4 +1,4 @@
-import type { LocalPassage, PageSnapshot, SearchRun } from '../../shared/types';
+import type { LocalPassage, PageSnapshot, Scope, SearchRun } from '../../shared/types';
 import { button, element } from '../../shared/utils';
 import { OWN_ATTR } from '../extract/walker';
 import { Credentials } from '../settings/credentials';
@@ -8,7 +8,7 @@ import { PANEL_CSS } from './styles';
 import { ResultsView, resultStatus } from './results';
 import { SettingsPanel } from './settings-panel';
 export type PanelActions = {
-  close(): void; settings(): void; search(): void; stop(): void;
+  close(): void; settings(): void; search(): void; resume(): void; stop(): void;
   select(passage: LocalPassage): void; navigate(direction: number): void; queryChanged(): void; preferencesChanged(): void;
 };
 export class Panel {
@@ -43,7 +43,7 @@ export class Panel {
     const search = button('查找', actions.search); search.className = 'primary';
     const row = element('div', undefined, 'row'); row.append(this.query, search);
     this.stopButton = button('停止检索', actions.stop); this.stopButton.hidden = true;
-    this.continueButton = button('继续检查未完成部分', actions.search); this.continueButton.hidden = true;
+    this.continueButton = button('继续检查未完成部分', actions.resume); this.continueButton.hidden = true;
     const controls = element('div', undefined, 'row'); controls.append(this.stopButton, this.continueButton);
     this.resultView = new ResultsView(actions.select); this.resultView.clear();
     this.live.setAttribute('aria-live', 'polite'); this.live.setAttribute('aria-atomic', 'true');
@@ -57,10 +57,14 @@ export class Panel {
     this.status.textContent = text;
     clearTimeout(this.liveTimer); this.liveTimer = setTimeout(() => { this.live.textContent = text; }, 300);
   }
-  waitForExtraction(): void { this.setStatus('正在自动提取最新文本，完成后开始搜索…'); this.stopButton.hidden = false; this.continueButton.hidden = true; }
+  ready(scope: Scope): void {
+    this.range.textContent = `范围：${SCOPE_LABELS[scope]} · 搜索时提取`;
+    this.setStatus('输入查询后按 Enter 搜索；每次搜索前读取最新页面文本。');
+  }
+  waitForExtraction(): void { this.setStatus('正在提取本次搜索的页面文本，完成后开始搜索…'); this.stopButton.hidden = false; this.continueButton.hidden = true; }
   snapshot(snapshot: PageSnapshot): void {
     this.range.textContent = `范围：${SCOPE_LABELS[snapshot.scope]} · ${snapshot.passages.length} 个片段`;
-    this.limitations.textContent = snapshot.limitations.join(' ');
+    this.limitations.textContent = ['结果基于本次搜索的文本快照；页面变化不会清空结果，再次查找时更新。', ...snapshot.limitations].join(' ');
   }
   clearSnapshot(): void { this.range.textContent = ''; this.limitations.textContent = ''; }
   result(snapshot: PageSnapshot, run: SearchRun, activeId?: string): void {

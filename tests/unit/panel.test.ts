@@ -15,7 +15,7 @@ describe('panel keyboard isolation', () => {
       document.addEventListener(type, pageKey, { signal: listeners.signal });
       window.addEventListener(type, pageKey, { signal: listeners.signal });
     }
-    panel = new Panel({ close() {}, settings() {}, search, stop() {}, select() {}, navigate() {}, queryChanged() {}, preferencesChanged() {} });
+    panel = new Panel({ close() {}, settings() {}, search, resume() {}, stop() {}, select() {}, navigate() {}, queryChanged() {}, preferencesChanged() {} });
   });
   afterEach(() => { panel.dispose(); credentials.dispose(); listeners.abort(); vi.unstubAllGlobals(); });
 

@@ -216,9 +216,6 @@
   var EXCLUDED = `script,style,noscript,template,input,textarea,select,option,form,[contenteditable]:not([contenteditable="false"]),[${OWN_ATTR}],.advertisement,.ads,.ad-slot,.share-buttons`;
   var ARTICLE_EXCLUDED = 'nav,aside,footer,button,[role="navigation"],[role="complementary"],[role="button"],[role="menu"]';
   var exclusions = (scope) => scope === "article" ? `${EXCLUDED},${ARTICLE_EXCLUDED}` : EXCLUDED;
-  function excluded(element2, scope = "loaded-page") {
-    return !!element2.closest(exclusions(scope));
-  }
   function readable(element2, cache = /* @__PURE__ */ new WeakMap(), scope = "loaded-page") {
     const known = cache.get(element2);
     if (known !== void 0) return known;
@@ -235,16 +232,18 @@
   }
   async function collectText(root, selection, signal, scope = "loaded-page") {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let node;
+    checkAbort(signal);
+    while (node = walker.nextNode()) nodes.push(node);
     const visibility = /* @__PURE__ */ new WeakMap();
     const collected = [];
     let count = 0;
-    let node;
-    while (node = walker.nextNode()) {
-      checkAbort(signal);
+    for (const text of nodes) {
       if (++count % 150 === 0) await nextTask();
-      const text = node;
+      checkAbort(signal);
       const parent = text.parentElement;
-      if (!parent || !readable(parent, visibility, scope)) continue;
+      if (!parent || !root.contains(text) || !readable(parent, visibility, scope)) continue;
       if (parent.tagName === "DETAILS" && !parent.hasAttribute("open")) continue;
       let start = 0, end = text.length;
       if (selection) {
@@ -255,7 +254,7 @@
         r.selectNodeContents(text);
         if (selection.compareBoundaryPoints(Range.END_TO_START, r) >= 0 || selection.compareBoundaryPoints(Range.START_TO_END, r) <= 0) continue;
       }
-      if (end > start) collected.push({ node: text, start, end });
+      if (end > start) collected.push({ node: text, parent, text: text.data.slice(start, end), start, end });
     }
     checkAbort(signal);
     return collected;
@@ -285,9 +284,9 @@
       checkAbort(signal);
       const texts = await collectText(candidate, void 0, signal, "article");
       let length = 0, linked = 0;
-      for (const { node } of texts) {
-        length += node.length;
-        if (node.parentElement?.closest("a")) linked += node.length;
+      for (const { text, parent } of texts) {
+        length += text.length;
+        if (parent.closest("a")) linked += text.length;
       }
       const paragraphs = candidate.querySelectorAll("p,li,blockquote,pre,tr").length;
       const ratio = linked / Math.max(1, length);
@@ -317,8 +316,7 @@
     if (container.matches('a,[role="link"],[role="menuitem"]')) return "link";
     return container.matches('button,[role="button"],summary') ? "control" : "content";
   }
-  function owner(node, root) {
-    let el = node.parentElement;
+  function owner(el, root) {
     let block;
     const standalone = ["navigation", "sidebar", "header", "footer"].includes(region(el)) || !el.closest("p,blockquote,pre,td,th");
     while (true) {
@@ -362,8 +360,8 @@
     const entries = await collectText(root, scope === "selection" ? selection : void 0, signal, scope);
     const blocks = [];
     let previous;
-    for (const { node, start, end } of entries) {
-      const container = owner(node, root);
+    for (const { node, parent, text, start, end } of entries) {
+      const container = owner(parent, root);
       let block = blocks.at(-1);
       if (!block || block.container !== container) {
         block = { container, text: "", slices: [], headingPath: [] };
@@ -372,7 +370,7 @@
       }
       if (previous && (previous.parentElement?.closest("td,th,p") !== node.parentElement?.closest("td,th,p") || previous.nextSibling?.nodeName === "BR")) block.text += "\n";
       const rawStart = block.text.length;
-      block.text += node.data.slice(start, end);
+      block.text += text;
       block.slices.push({ node, nodeStart: start, nodeEnd: end, rawStart, rawEnd: block.text.length });
       previous = node;
     }
@@ -426,50 +424,6 @@
       limitations: ["只检索范围内已加载且可读取的文本；不包含表单、编辑区、隐藏或折叠内容、iframe、Shadow DOM、图片、Canvas 和 PDF。"]
     };
   }
-
-  // src/userscript/extract/observe.ts
-  function owned(node) {
-    const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-    return !!el?.closest(`[${OWN_ATTR}]`);
-  }
-  var ContentObserver = class {
-    observer;
-    disconnect() {
-      this.observer?.disconnect();
-      this.observer = void 0;
-    }
-    watch(root, invalidate, scope = "loaded-page") {
-      this.disconnect();
-      const states = /* @__PURE__ */ new Map();
-      const cache = /* @__PURE__ */ new WeakMap();
-      for (const el of [root, ...root.querySelectorAll("*")]) if (!owned(el)) states.set(el, readable(el, cache, scope));
-      const relevant = (record) => {
-        if (owned(record.target)) return false;
-        const target = record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement;
-        if (!target) return false;
-        if (record.type === "attributes") {
-          if (record.attributeName === "role" && root.contains(target)) return true;
-          const nextCache = /* @__PURE__ */ new WeakMap();
-          for (const [el, visible] of states) if (readable(el, nextCache, scope) !== visible) return true;
-          return false;
-        }
-        if (record.type === "characterData") return root.contains(target) && !excluded(target, scope) && readable(target, void 0, scope);
-        const changed = [...record.addedNodes, ...record.removedNodes].filter((n) => !owned(n));
-        if (!changed.length) return false;
-        if (!root.isConnected || changed.some((n) => n === root || n.contains(root))) return true;
-        if (!root.contains(target) || excluded(target, scope) || !readable(target, void 0, scope)) return false;
-        return changed.some((n) => n.nodeType === Node.TEXT_NODE ? !!n.textContent?.trim() : n instanceof Element && !excluded(n, scope) && !n.matches("script,style,link,meta"));
-      };
-      this.observer = new MutationObserver((records) => {
-        const changes = records.filter(relevant);
-        if (!changes.length) return;
-        this.disconnect();
-        invalidate(changes.some((r) => r.addedNodes.length > 0));
-      });
-      this.observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "open", "style", "class", "contenteditable", "role"] });
-      for (let parent = root.parentElement; parent; parent = parent.parentElement) this.observer.observe(parent, { childList: true, attributes: true, attributeFilter: ["hidden", "style", "class"] });
-    }
-  };
 
   // src/userscript/extract/anchors.ts
   function validAnchor(passage) {
@@ -978,7 +932,7 @@
     matches(passages) {
       if (this.mode !== "css") return;
       try {
-        this.api.CSS.highlights.set(this.names[0], new this.api.Highlight(...passages.flatMap(passageRanges)));
+        this.api.CSS.highlights.set(this.names[0], new this.api.Highlight(...passages.filter(validAnchor).flatMap(passageRanges)));
       } catch {
         this.clear();
         this.mode = "overlay";
@@ -1004,9 +958,13 @@
         this.overlay.clear();
       }
     }
-    clear() {
-      this.names.forEach((name) => this.api.CSS?.highlights?.delete(name));
+    clearActive() {
+      this.api.CSS?.highlights?.delete(this.names[1]);
       this.overlay.clear();
+    }
+    clear() {
+      this.api.CSS?.highlights?.delete(this.names[0]);
+      this.clearActive();
     }
     dispose() {
       this.clear();
@@ -1344,7 +1302,7 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
           this.message.textContent = "导入失败：只接受普通设置，不接受凭据或未知字段。";
         }
       }));
-      details.append(scopeLabel, scope, element("p", "页面变化会自动在本地重新提取，不自动发送。选区模式需先选中文字再打开搜索；私密页面建议禁用检索。", "muted"), label, shortcut, takeoverLabel, marginLabel, margin, site, controls, json);
+      details.append(scopeLabel, scope, element("p", "仅在主动搜索前提取最新文本；页面变化不影响已有结果。选区模式需先选中文字再打开搜索；私密页面建议禁用检索。", "muted"), label, shortcut, takeoverLabel, marginLabel, margin, site, controls, json);
       this.node.append(details);
     }
     dispose() {
@@ -1396,7 +1354,7 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
       row.append(this.query, search);
       this.stopButton = button("停止检索", actions.stop);
       this.stopButton.hidden = true;
-      this.continueButton = button("继续检查未完成部分", actions.search);
+      this.continueButton = button("继续检查未完成部分", actions.resume);
       this.continueButton.hidden = true;
       const controls = element("div", void 0, "row");
       controls.append(this.stopButton, this.continueButton);
@@ -1443,14 +1401,18 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
         this.live.textContent = text;
       }, 300);
     }
+    ready(scope) {
+      this.range.textContent = `范围：${SCOPE_LABELS[scope]} · 搜索时提取`;
+      this.setStatus("输入查询后按 Enter 搜索；每次搜索前读取最新页面文本。");
+    }
     waitForExtraction() {
-      this.setStatus("正在自动提取最新文本，完成后开始搜索…");
+      this.setStatus("正在提取本次搜索的页面文本，完成后开始搜索…");
       this.stopButton.hidden = false;
       this.continueButton.hidden = true;
     }
     snapshot(snapshot) {
       this.range.textContent = `范围：${SCOPE_LABELS[snapshot.scope]} · ${snapshot.passages.length} 个片段`;
-      this.limitations.textContent = snapshot.limitations.join(" ");
+      this.limitations.textContent = ["结果基于本次搜索的文本快照；页面变化不会清空结果，再次查找时更新。", ...snapshot.limitations].join(" ");
     }
     clearSnapshot() {
       this.range.textContent = "";
@@ -1525,13 +1487,9 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
     focus;
     epoch = 0;
     revision = 0;
-    extraction = 0;
     submission = 0;
     extracting;
-    observer = new ContentObserver();
     inSettings = false;
-    refreshTimer;
-    pendingSearch;
     activeId;
     currentURL = location.href;
     routeTimer;
@@ -1575,27 +1533,19 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
         close: () => this.close(),
         settings: () => this.settings(),
         search: () => void this.search(),
+        resume: () => void this.search(true),
         stop: () => {
-          const waiting = !!this.pendingSearch;
-          this.submission++;
-          this.pendingSearch = void 0;
+          const waiting = !!this.extracting;
+          this.cancelSubmission();
           this.controller.cancel();
           if (waiting) {
             this.panel?.clearResults();
-            this.panel?.setStatus("已停止等待搜索。页面文本仍会在本地自动更新。");
+            this.panel?.setStatus("已停止提取和搜索。再次查找时会读取最新页面文本。");
           }
         },
         select: (p) => this.select(p),
         navigate: (direction) => this.navigate(direction),
-        queryChanged: () => {
-          this.submission++;
-          this.pendingSearch = void 0;
-          this.controller.cancel();
-          this.controller.run = void 0;
-          this.highlight?.clear();
-          this.panel?.clearResults();
-          this.activeId = void 0;
-        },
+        queryChanged: () => this.configurationChanged(),
         preferencesChanged: () => this.configurationChanged()
       });
       this.highlight = new Highlighter();
@@ -1620,17 +1570,15 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
         panel.setStatus("本站已永久禁用检索，可在设置中恢复。");
         return;
       }
-      if (!this.snapshot && !this.extracting && !this.refreshTimer) void this.extract();
+      if (!this.snapshot && !this.extracting) panel.ready(preferences().scope);
     }
-    reset(keepPending = false) {
+    cancelSubmission() {
       this.submission++;
-      this.extraction++;
-      this.extracting?.abort();
+      this.extracting?.abort.abort();
       this.extracting = void 0;
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = void 0;
-      if (!keepPending) this.pendingSearch = void 0;
-      this.observer.disconnect();
+    }
+    reset() {
+      this.cancelSubmission();
       this.controller.clear();
       this.snapshot = void 0;
       this.activeId = void 0;
@@ -1644,9 +1592,10 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
       this.panel?.showSettings(this.credentials, this.client, () => this.open());
     }
     configurationChanged() {
-      this.refresh("配置已变化，旧任务已停止，正在自动重新提取。");
+      this.reset();
       if (!readCredential()) this.panel?.setStatus("请先在设置中配置 API Key。");
       else if (preferences().sites[location.origin] === "disabled") this.panel?.setStatus("本站已永久禁用检索，可在设置中恢复。");
+      else if (!this.inSettings) this.panel?.ready(preferences().scope);
     }
     close() {
       this.reset();
@@ -1665,62 +1614,13 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
       this.currentURL = location.href;
       this.epoch++;
       this.selection = void 0;
-      this.refresh("页面已导航，正在自动重新提取。");
-    }
-    refresh(message, keepPending = false) {
-      this.reset(keepPending);
-      if (!this.panel || this.inSettings) return;
-      if (this.pendingSearch) this.panel.waitForExtraction();
-      else this.panel.setStatus(message);
-      if (!readCredential() || preferences().sites[location.origin] === "disabled") return;
-      this.refreshTimer = setTimeout(() => {
-        this.refreshTimer = void 0;
-        void this.extract();
-      }, 250);
-    }
-    invalidate() {
-      this.refresh("页面内容已变化，旧结果已清除，正在自动重新提取。", true);
-    }
-    async extract() {
-      this.reset(true);
-      const panel = this.panel;
-      if (!panel || this.inSettings) return;
-      if (!readCredential()) {
-        this.settings();
-        return;
-      }
-      const prefs = preferences();
-      if (prefs.sites[location.origin] === "disabled") {
-        panel.setStatus("本站已永久禁用检索。");
-        return;
-      }
-      const generation = this.extraction, abort = new AbortController();
-      this.extracting = abort;
-      if (this.pendingSearch) panel.waitForExtraction();
-      else panel.setStatus("正在本地提取页面文本；尚未发送任何文本…");
-      this.observer.watch(document.body, () => this.invalidate(), prefs.scope);
-      try {
-        const snapshot = await extractSnapshot(prefs.scope, this.selection, this.epoch, ++this.revision, abort.signal);
-        if (generation !== this.extraction || panel !== this.panel || abort.signal.aborted) return;
-        this.snapshot = snapshot;
-        panel.snapshot(snapshot);
-        panel.clearResults();
-        panel.setStatus(snapshot.passages.length ? "页面文本已在本地准备好。输入查询后按 Enter 即可搜索。" : "没有读到可搜索的文本；可在设置中调整范围，或先选中文字再打开搜索。");
-        this.observer.watch(snapshot.root, () => this.invalidate(), prefs.scope);
-        const pending = this.pendingSearch;
-        this.pendingSearch = void 0;
-        if (pending && pending.query === panel.query.value.trim() && pending.credentialId === readCredential()?.id) void this.search();
-      } catch (error) {
-        if (generation === this.extraction) {
-          this.pendingSearch = void 0;
-          panel.clearResults();
-          panel.setStatus(safeMessage(error));
-        }
-      } finally {
-        if (generation === this.extraction) this.extracting = void 0;
+      this.reset();
+      if (this.panel && !this.inSettings) {
+        this.panel.ready(preferences().scope);
+        this.panel.setStatus("页面已导航，请重新搜索以读取最新文本。");
       }
     }
-    async search() {
+    async search(resume = false) {
       this.route();
       const panel = this.panel;
       if (!panel || this.inSettings) return;
@@ -1734,29 +1634,41 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
         this.settings();
         return;
       }
-      if (preferences().sites[location.origin] === "disabled") return;
-      if (!this.snapshot) {
-        this.pendingSearch = { query, credentialId };
-        if (!this.extracting && !this.refreshTimer) void this.extract();
-        else panel.waitForExtraction();
-        return;
-      }
-      if (!this.snapshot.passages.length) {
-        panel.setStatus("没有可搜索的文本，请在设置中调整范围。");
-        return;
-      }
-      if (this.controller.run?.status === "running" && this.controller.run.query === query && this.controller.run.snapshotId === this.snapshot.id) return;
-      const submission = ++this.submission;
+      const prefs = preferences();
+      if (prefs.sites[location.origin] === "disabled") return;
+      const run = this.controller.run;
+      if (this.extracting?.query === query || run?.status === "running" && run.query === query) return;
+      if (resume) {
+        if (!this.snapshot || !run || run.snapshotId !== this.snapshot.id || run.query !== query || run.credentialId !== credentialId || !["partial", "cancelled"].includes(run.status)) return;
+      } else this.reset();
+      const submission = ++this.submission, epoch = this.epoch, url = location.href;
+      const valid = () => this.panel === panel && this.submission === submission && !this.inSettings && this.epoch === epoch && location.href === url && readCredential()?.id === credentialId && preferences().sites[location.origin] !== "disabled";
       try {
-        const snapshot = fitSnapshot(this.snapshot, query);
-        this.snapshot = snapshot;
-        panel.snapshot(snapshot);
-        const url = location.href;
-        this.highlight?.clear();
-        this.activeId = void 0;
-        await this.controller.start(snapshot, query, credentialId, () => this.snapshot === snapshot && this.panel === panel && this.submission === submission && this.epoch === snapshot.pageEpoch && location.href === url && preferences().sites[location.origin] !== "disabled");
+        let snapshot = this.snapshot;
+        if (!resume) {
+          const abort = new AbortController();
+          this.extracting = { query, abort };
+          panel.waitForExtraction();
+          snapshot = await extractSnapshot(prefs.scope, this.selection, epoch, ++this.revision, abort.signal);
+          if (!valid() || abort.signal.aborted) return;
+          this.extracting = void 0;
+          snapshot = fitSnapshot(snapshot, query);
+          this.snapshot = snapshot;
+          panel.snapshot(snapshot);
+          panel.clearResults();
+        }
+        if (!snapshot?.passages.length) {
+          panel.setStatus("没有可搜索的文本，请在设置中调整范围。");
+          return;
+        }
+        await this.controller.start(snapshot, query, credentialId, () => valid() && this.snapshot === snapshot);
       } catch (error) {
-        if (this.panel === panel && this.submission === submission) panel.setStatus(safeMessage(error));
+        if (valid()) {
+          if (!resume) panel.clearResults();
+          panel.setStatus(safeMessage(error));
+        }
+      } finally {
+        if (this.submission === submission) this.extracting = void 0;
       }
     }
     render(run) {
@@ -1785,7 +1697,10 @@ label{display:block;margin:10px 0 5px}.row{display:flex;gap:8px;align-items:cent
         this.render(this.controller.run);
         this.panel?.setStatus(`已定位：${passageLabel(passage)}。${this.highlight?.mode === "css" ? "" : this.highlight?.mode === "overlay" ? "当前使用单处覆盖高亮。" : "高亮不可用，已滚动到原文。"}`);
       } catch {
-        this.invalidate();
+        this.highlight?.clearActive();
+        this.activeId = passage.id;
+        this.render(this.controller.run);
+        this.panel?.setStatus("该片段的原文已变化，暂时无法定位；搜索结果已保留。重新搜索可读取最新文本。");
       }
     }
     navigate(direction) {

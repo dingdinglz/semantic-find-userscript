@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { extractSnapshot } from '../../src/userscript/extract/passages';
 import { passageRanges, validAnchor, exactReanchor } from '../../src/userscript/extract/anchors';
 import { collectText } from '../../src/userscript/extract/walker';
+import * as utils from '../../src/shared/utils';
 const html = readFileSync('tests/fixtures/article.html', 'utf8');
 beforeEach(() => { document.documentElement.innerHTML = html; });
+afterEach(() => vi.restoreAllMocks());
 describe('original DOM extraction and UTF-16 anchoring', () => {
   it('keeps original slices and excludes unsupported/private text, including collapsed details', async () => {
     const snapshot = await extractSnapshot('article', undefined, 0, 1);
@@ -88,6 +90,30 @@ describe('original DOM extraction and UTF-16 anchoring', () => {
     document.body.innerHTML = '<div>A plain page without a reliable article root.</div>';
     await expect(extractSnapshot('article', undefined, 0, 1)).rejects.toMatchObject({ code: 'scope' });
     expect((await extractSnapshot('loaded-page', undefined, 0, 1)).passages).toHaveLength(1);
+  });
+  it('does not chase new text nodes appended during asynchronous extraction', async () => {
+    document.body.innerHTML = '<article>' + '<p>Initial content</p>'.repeat(300) + '</article>';
+    const yieldTask = vi.spyOn(utils, 'nextTask').mockImplementation(async () => {
+      // An unbounded live TreeWalker would keep visiting these appended nodes.
+      if (yieldTask.mock.calls.length < 5) document.querySelector('article')!.insertAdjacentHTML('beforeend', '<p>New content</p>'.repeat(200));
+    });
+    const snap = await extractSnapshot('loaded-page', undefined, 0, 1);
+    expect(snap.passages).toHaveLength(300); expect(yieldTask).toHaveBeenCalledTimes(2);
+    expect(snap.passages.every(p => p.text === 'Initial content')).toBe(true);
+  });
+  it('keeps collected text when nodes change or detach before extraction completes', async () => {
+    document.body.innerHTML = '<article>' + '<p>Original content</p>'.repeat(300) + '</article>';
+    const paragraphs = [...document.querySelectorAll('p')];
+    vi.spyOn(utils, 'nextTask').mockImplementationOnce(async () => {
+      paragraphs[0].firstChild!.textContent = 'Changed';
+      paragraphs[1].replaceChildren(document.createTextNode('Replacement'));
+      paragraphs[2].remove();
+    });
+    const snap = await extractSnapshot('loaded-page', undefined, 0, 1);
+    expect(snap.passages).toHaveLength(300);
+    expect(snap.passages.slice(0, 3).map(p => p.text)).toEqual(Array(3).fill('Original content'));
+    expect(snap.passages.slice(0, 3).map(validAnchor)).toEqual([false, false, false]);
+    expect(validAnchor(snap.passages[3])).toBe(true);
   });
   it('rejects changed or replaced nodes and ambiguous exact reanchors', async () => {
     const { passages } = await extractSnapshot('article', undefined, 0, 1), p = passages[0];
